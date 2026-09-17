@@ -6,8 +6,10 @@ Pulls today's live rates for:
   - Intelligent Octopus Go (fixed) — EV dual-rate electricity tariff
   - Octopus 12M Fixed (dual fuel) — electricity + gas
 
-...for your GSP region, and appends one dated row per tariff to
-octopus_tariff_history.csv (created alongside this script).
+...for your GSP region, estimates what each would cost you annually and
+monthly at your usage (DAY_USAGE_KWH/NIGHT_USAGE_KWH/GAS_USAGE_KWH below),
+and appends one dated row per tariff to octopus_tariff_history.csv
+(created alongside this script).
 
 No API key needed — Octopus's product/tariff endpoints are public.
 Docs: https://docs.octopus.energy/rest/guides/endpoints/
@@ -38,13 +40,61 @@ import requests
 # ---------------------------------------------------------------------
 POSTCODE = os.environ.get("OCTOPUS_POSTCODE", "CHANGE_ME")
 
+# ---------------------------------------------------------------------
+# Your annual usage, used to turn each day's rates into a cost estimate.
+# Defaults below are the annualised figures worked out from a meter
+# reading (3 Nov 2025 -> 6,032 kWh combined, 13,000 miles at 3.3 mi/kWh)
+# in the accompanying spreadsheet. Override via env vars if your usage
+# changes, rather than editing this file.
+# ---------------------------------------------------------------------
+DAY_USAGE_KWH = float(os.environ.get("DAY_USAGE_KWH", "2402"))
+NIGHT_USAGE_KWH = float(os.environ.get("NIGHT_USAGE_KWH", "4522"))
+GAS_USAGE_KWH = float(os.environ.get("GAS_USAGE_KWH", "9111"))
+
 CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "octopus_tariff_history.csv")
 BASE = "https://api.octopus.energy/v1"
 FIELDNAMES = [
     "date", "option", "product_code", "term_months",
     "elec_day_rate", "elec_night_rate", "elec_standing",
     "gas_rate", "gas_standing", "exit_fee",
+    "elec_annual_cost_gbp", "gas_annual_cost_gbp", "total_annual_cost_gbp",
+    "elec_monthly_cost_gbp", "gas_monthly_cost_gbp", "total_monthly_cost_gbp",
 ]
+
+
+def estimate_costs(row: dict) -> dict:
+    """Annual/monthly cost at DAY_USAGE_KWH/NIGHT_USAGE_KWH/GAS_USAGE_KWH,
+    given one row's rates, broken out as elec-only / gas-only / total.
+    Dual-rate electricity (elec_night_rate present) prices day and night
+    usage separately; single-rate electricity (no night rate, e.g. a plain
+    dual-fuel fix) prices ALL electricity usage -- day + night combined --
+    at the one rate, since there's no cheap overnight window on that
+    tariff. Gas-only figures are 0 for an electricity-only tariff."""
+    day_rate = row["elec_day_rate"]
+    night_rate = row["elec_night_rate"]
+    standing = row["elec_standing"]
+
+    if night_rate != "":
+        elec_cost = (DAY_USAGE_KWH * day_rate / 100) + (NIGHT_USAGE_KWH * night_rate / 100)
+    else:
+        elec_cost = (DAY_USAGE_KWH + NIGHT_USAGE_KWH) * day_rate / 100
+    elec_cost += 365 * standing / 100
+
+    gas_cost = 0.0
+    if row["gas_rate"] != "":
+        gas_cost = (GAS_USAGE_KWH * row["gas_rate"] / 100) + (365 * row["gas_standing"] / 100)
+
+    elec_annual = round(elec_cost, 2)
+    gas_annual = round(gas_cost, 2)
+    total_annual = round(elec_cost + gas_cost, 2)
+    return {
+        "elec_annual_cost_gbp": elec_annual,
+        "gas_annual_cost_gbp": gas_annual,
+        "total_annual_cost_gbp": total_annual,
+        "elec_monthly_cost_gbp": round(elec_annual / 12, 2),
+        "gas_monthly_cost_gbp": round(gas_annual / 12, 2),
+        "total_monthly_cost_gbp": round(total_annual / 12, 2),
+    }
 
 
 def get_region_letter(postcode: str) -> str:
@@ -203,6 +253,9 @@ def main():
 
     if not rows:
         sys.exit("No rows to write — see warnings above.")
+
+    for row in rows:
+        row.update(estimate_costs(row))
 
     file_exists = os.path.exists(CSV_PATH)
     with open(CSV_PATH, "a", newline="") as f:
