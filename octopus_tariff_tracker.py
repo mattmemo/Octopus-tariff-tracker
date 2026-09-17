@@ -101,6 +101,35 @@ def extract_dual_register_elec(detail: dict, region: str):
     }
 
 
+def extract_four_rate_ev_elec(detail: dict, region: str):
+    """Intelligent Octopus Go (and similar smart EV tariffs) don't use a
+    classic Economy-7 dual-register meter — Octopus publishes their rates
+    under 'four_rate_ev_electricity_tariffs' instead, with day/night rates
+    plus separate (often identical) EV-device peak/off-peak rates tied to
+    the smart-charging schedule. dual_register/single_register both come
+    back empty {} for these products."""
+    block = detail.get("four_rate_ev_electricity_tariffs", {}).get(f"_{region}")
+    if not block:
+        return None
+    dd = block["direct_debit_monthly"]
+    return {
+        "elec_day_rate": dd["day_unit_rate_inc_vat"],
+        "elec_night_rate": dd["night_unit_rate_inc_vat"],
+        "elec_standing": dd["standing_charge_inc_vat"],
+        "exit_fee": round(dd["exit_fees_inc_vat"] / 100, 2),
+    }
+
+
+def extract_ev_tariff_elec(detail: dict, region: str):
+    """Try every known shape for an EV/dual-rate electricity tariff, in
+    order, since Octopus doesn't use the same key consistently across
+    products (or product vintages)."""
+    return (
+        extract_four_rate_ev_elec(detail, region)
+        or extract_dual_register_elec(detail, region)
+    )
+
+
 def extract_single_register_elec(detail: dict, region: str):
     block = detail.get("single_register_electricity_tariffs", {}).get(f"_{region}")
     if not block:
@@ -137,7 +166,7 @@ def main():
     iog = find_live_product("Intelligent Octopus Go", exclude_terms=("Saver", "OEV"))
     if iog:
         detail = get_product_detail(iog["code"])
-        elec = extract_dual_register_elec(detail, region)
+        elec = extract_ev_tariff_elec(detail, region)
         if elec:
             rows.append({
                 "date": today,
@@ -148,7 +177,7 @@ def main():
                 **elec,
             })
         else:
-            print(f"Warning: no dual-register electricity rates found for region {region} on {iog['code']}", file=sys.stderr)
+            print(f"Warning: no EV-tariff electricity rates found (checked four_rate_ev and dual_register) for region {region} on {iog['code']}", file=sys.stderr)
     else:
         print("Warning: no live 'Intelligent Octopus Go' fixed product found.", file=sys.stderr)
 
