@@ -1,2 +1,4 @@
 date,option,product_code,term_months,elec_day_rate,elec_night_rate,elec_standing,gas_rate,gas_standing,exit_fee
 2026-09-17,Octopus 12M Fixed,OE-FIX-12M-26-09-11,12,27.786045,,61.09026,8.85171,28.98399,50.0
+2026-09-17,Intelligent Octopus Go 12M Fixed,IOG-SMB-FIX-12M-26-09-02,12,32.66781,7.99995,63.43974,,,0.0
+2026-09-17,Octopus 12M Fixed,OE-FIX-12M-26-09-11,12,27.786045,,61.09026,8.85171,28.98399,50.0
