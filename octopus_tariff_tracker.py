@@ -117,7 +117,7 @@ def find_live_product(name_contains: str, exclude_terms=()):
     for p in r.json()["results"]:
         if p.get("brand") != "OCTOPUS_ENERGY":
             continue
-        if "OE-FIX" not in p.get("code") or "IOG-" not in p.get("code"):
+        if "OE-FIX" not in p.get("code") and "IOG-" not in p.get("code"):
             continue  
         if p.get("direction", "IMPORT") != "IMPORT":
             continue
