@@ -262,7 +262,7 @@ TARIFF_CONFIGS = [
     },
     {
         "label": "Intelligent Octopus Go Loyal",
-        "name_contains": "Intelligent Octopus Go Loyal",
+        "name_contains": "Intelligent Octopus Go 12M Loyal",
         "exclude_terms": (),
         "term_months": None,
         "elec_kind": "ev",
