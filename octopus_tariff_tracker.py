@@ -26,6 +26,7 @@ import csv
 import datetime
 import os
 import sys
+import time
 from typing import Optional
 
 import requests
@@ -54,6 +55,27 @@ GAS_USAGE_KWH = float(os.environ.get("GAS_USAGE_KWH", "9111"))
 
 CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "octopus_tariff_history.csv")
 BASE = "https://api.octopus.energy/v1"
+
+
+def api_get(url: str, params: dict = None, retries: int = 3, backoff: float = 1.5) -> requests.Response:
+    """GET with retry-on-5xx. Octopus's product-detail endpoint 502s/503s
+    occasionally on individual lookups even when the rest of the API is
+    healthy -- this retries a few times with exponential backoff before
+    giving up, rather than failing a whole tariff on one flaky response."""
+    last_exc = None
+    for attempt in range(retries):
+        try:
+            r = requests.get(url, params=params, timeout=15)
+            if r.status_code >= 500:
+                r.raise_for_status()  # raises HTTPError, caught below, retried
+            return r
+        except requests.HTTPError as e:
+            last_exc = e
+        except requests.RequestException as e:  # connection errors, timeouts
+            last_exc = e
+        if attempt < retries - 1:
+            time.sleep(backoff ** attempt)
+    raise last_exc
 FIELDNAMES = [
     "date", "option", "product_code", "term_months",
     "elec_day_rate", "elec_night_rate", "elec_standing",
@@ -115,7 +137,7 @@ def estimate_costs(row: dict) -> dict:
 
 
 def get_region_letter(postcode: str) -> str:
-    r = requests.get(f"{BASE}/industry/grid-supply-points/", params={"postcode": postcode}, timeout=15)
+    r = api_get(f"{BASE}/industry/grid-supply-points/", params={"postcode": postcode})
     r.raise_for_status()
     results = r.json()["results"]
     if not results:
@@ -137,7 +159,7 @@ def find_live_product(name_contains: str, exclude_terms=(), term_months=None, mi
     it closes. term_months, if given, filters to products with that exact
     term (needed when several term lengths share a name, e.g. 12M vs 18M
     Fixed)."""
-    r = requests.get(f"{BASE}/products/", params={"is_variable": "false"}, timeout=15)
+    r = api_get(f"{BASE}/products/", params={"is_variable": "false"})
     r.raise_for_status()
     now = datetime.datetime.now(datetime.timezone.utc)
     candidates = []
@@ -167,7 +189,7 @@ def find_live_product(name_contains: str, exclude_terms=(), term_months=None, mi
 
 
 def get_product_detail(code: str) -> dict:
-    r = requests.get(f"{BASE}/products/{code}/", timeout=15)
+    r = api_get(f"{BASE}/products/{code}/")
     r.raise_for_status()
     return r.json()
 
@@ -262,7 +284,7 @@ TARIFF_CONFIGS = [
     },
     {
         "label": "Intelligent Octopus Go Loyal",
-        "name_contains": "Intelligent Octopus Go 12M Loyal",
+        "name_contains": "Intelligent Octopus Go Loyal",
         "exclude_terms": (),
         "term_months": None,
         "elec_kind": "ev",
