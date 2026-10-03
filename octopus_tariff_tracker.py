@@ -26,6 +26,7 @@ import csv
 import datetime
 import os
 import sys
+from typing import Optional
 
 import requests
 
@@ -74,15 +75,31 @@ def estimate_costs(row: dict) -> dict:
     night_rate = row["elec_night_rate"]
     standing = row["elec_standing"]
 
-    if night_rate != "":
-        elec_cost = (DAY_USAGE_KWH * day_rate / 100) + (NIGHT_USAGE_KWH * night_rate / 100)
+    if day_rate is None:
+        # Gas-only tariff (e.g. 18M Fixed gas) -- no electricity component at all.
+        elec_cost = 0.0
+    elif night_rate not in ("", None):
+        elec_cost = (DAY_USAGE_KWH * day_rate / 100) + (NIGHT_USAGE_KWH * night_rate / 100) + 365 * standing / 100
     else:
-        elec_cost = (DAY_USAGE_KWH + NIGHT_USAGE_KWH) * day_rate / 100
-    elec_cost += 365 * standing / 100
+        if night_rate is None:
+            print(
+                f"Warning: {row.get('product_code')} returned a null night rate "
+                "(not just 'not applicable') -- pricing all usage at the day rate, "
+                "which likely OVERSTATES this tariff's cost. See the raw-shape "
+                "debug note in this file before trusting this row.",
+                file=sys.stderr,
+            )
+        elec_cost = (DAY_USAGE_KWH + NIGHT_USAGE_KWH) * day_rate / 100 + 365 * standing / 100
 
     gas_cost = 0.0
-    if row["gas_rate"] != "":
+    if row["gas_rate"] not in ("", None):
         gas_cost = (GAS_USAGE_KWH * row["gas_rate"] / 100) + (365 * row["gas_standing"] / 100)
+    elif row["gas_rate"] is None:
+        print(
+            f"Warning: {row.get('product_code')} returned a null gas rate -- "
+            "gas cost for this row is 0.0, not a real estimate.",
+            file=sys.stderr,
+        )
 
     elec_annual = round(elec_cost, 2)
     gas_annual = round(gas_cost, 2)
@@ -106,24 +123,39 @@ def get_region_letter(postcode: str) -> str:
     return results[0]["group_id"].lstrip("_")
 
 
-def find_live_product(name_contains: str, exclude_terms=()):
+def find_live_product(name_contains: str, exclude_terms=(), term_months=None, min_days_left=1):
     """Return the currently-open Octopus-brand IMPORT product whose display
     name contains name_contains (case-insensitive), preferring the most
     recently issued version. Excludes any product whose name/code contains
-    one of exclude_terms (used to skip special-eligibility variants)."""
+    one of exclude_terms (used to skip special-eligibility variants).
+
+    A product counts as "closed" if available_to is in the past OR within
+    min_days_left of now -- Octopus sets available_to to a future timestamp
+    shortly before a fixed product actually stops being offered, so
+    `available_to is not None` alone lets an about-to-expire product (with
+    rates that can be incomplete/null) through right up until the moment
+    it closes. term_months, if given, filters to products with that exact
+    term (needed when several term lengths share a name, e.g. 12M vs 18M
+    Fixed)."""
     r = requests.get(f"{BASE}/products/", params={"is_variable": "false"}, timeout=15)
     r.raise_for_status()
+    now = datetime.datetime.now(datetime.timezone.utc)
     candidates = []
     for p in r.json()["results"]:
         if p.get("brand") != "OCTOPUS_ENERGY":
             continue
         if "OE-FIX" not in p.get("code") and "IOG-" not in p.get("code"):
-            continue  
+            continue
         if p.get("direction", "IMPORT") != "IMPORT":
             continue
         if name_contains.lower() not in p["display_name"].lower():
             continue
-        if p["available_to"] is not None:
+        available_to = p.get("available_to")
+        if available_to is not None:
+            closes_at = datetime.datetime.fromisoformat(available_to.replace("Z", "+00:00"))
+            if (closes_at - now) < datetime.timedelta(days=min_days_left):
+                continue
+        if term_months is not None and p.get("term") != term_months:
             continue
         if any(t.lower() in p["display_name"].lower() or t.lower() in p["code"].lower() for t in exclude_terms):
             continue
@@ -206,6 +238,101 @@ def extract_gas(detail: dict, region: str):
     }
 
 
+# ---------------------------------------------------------------------
+# Which tariffs to track. Add/remove entries here -- nothing else in the
+# script needs to change. Each entry:
+#   label         - just for log messages
+#   name_contains - matched against product display_name (case-insensitive)
+#   exclude_terms - skip products whose name/code also contains any of these
+#   term_months   - filter to this exact term (None = don't filter)
+#   elec_kind     - "ev" (four_rate_ev/dual_register, e.g. IOG),
+#                   "single" (single_register, e.g. a plain fix), or
+#                   None (electricity-only products aren't expected -
+#                   used for gas-only tariffs)
+#   wants_gas     - whether to also look up + require a gas rate
+# ---------------------------------------------------------------------
+TARIFF_CONFIGS = [
+    {
+        "label": "Intelligent Octopus Go",
+        "name_contains": "Intelligent Octopus Go",
+        "exclude_terms": ("Saver", "OEV", "Loyal"),
+        "term_months": None,
+        "elec_kind": "ev",
+        "wants_gas": False,
+    },
+    {
+        "label": "Intelligent Octopus Go Loyal",
+        "name_contains": "Intelligent Octopus Go Loyal",
+        "exclude_terms": (),
+        "term_months": None,
+        "elec_kind": "ev",
+        "wants_gas": False,
+    },
+    {
+        "label": "Octopus 12M Fixed (dual fuel)",
+        "name_contains": "Octopus 12M Fixed",
+        "exclude_terms": (),
+        "term_months": 12,
+        "elec_kind": "single",
+        "wants_gas": True,
+    },
+    {
+        "label": "Octopus 18M Fixed (gas)",
+        "name_contains": "Octopus 18M Fixed",
+        "exclude_terms": (),
+        "term_months": 18,
+        # If this turns out to be a dual-fuel product on your account
+        # rather than gas-only, change elec_kind to "single" below.
+        "elec_kind": None,
+        "wants_gas": True,
+    },
+]
+
+ELEC_EXTRACTORS = {
+    "ev": extract_ev_tariff_elec,
+    "single": extract_single_register_elec,
+    None: None,
+}
+
+
+def resolve_tariff_row(cfg: dict, region: str, today: str) -> Optional[dict]:
+    """Look up one tariff per TARIFF_CONFIGS entry and return a CSV-ready
+    row dict, or None (with a warning printed) if it can't be resolved.
+    Never raises -- a problem with one tariff must not stop the others."""
+    product = find_live_product(
+        cfg["name_contains"], exclude_terms=cfg["exclude_terms"], term_months=cfg["term_months"]
+    )
+    if not product:
+        print(f"Warning: no live '{cfg['label']}' product found.", file=sys.stderr)
+        return None
+
+    detail = get_product_detail(product["code"])
+
+    elec = {"elec_day_rate": None, "elec_night_rate": "", "elec_standing": None, "exit_fee": None}
+    extractor = ELEC_EXTRACTORS[cfg["elec_kind"]]
+    if extractor is not None:
+        elec = extractor(detail, region)
+        if not elec:
+            print(f"Warning: no electricity rates found for region {region} on {product['code']} ({cfg['label']})", file=sys.stderr)
+            return None
+
+    gas = {"gas_rate": "", "gas_standing": ""}
+    if cfg["wants_gas"]:
+        gas = extract_gas(detail, region)
+        if not gas:
+            print(f"Warning: no gas rates found for region {region} on {product['code']} ({cfg['label']})", file=sys.stderr)
+            return None
+
+    return {
+        "date": today,
+        "option": product["display_name"],
+        "product_code": product["code"],
+        "term_months": product.get("term"),
+        **elec,
+        **gas,
+    }
+
+
 def main():
     if POSTCODE == "CHANGE_ME":
         sys.exit("Set POSTCODE at the top of this script to your postcode (or outward code) first.")
@@ -214,44 +341,14 @@ def main():
     region = get_region_letter(POSTCODE)
     rows = []
 
-    # --- Intelligent Octopus Go (fixed) — EV dual-rate electricity only ---
-    iog = find_live_product("Intelligent Octopus Go", exclude_terms=("Saver", "OEV"))
-    if iog:
-        detail = get_product_detail(iog["code"])
-        elec = extract_ev_tariff_elec(detail, region)
-        if elec:
-            rows.append({
-                "date": today,
-                "option": iog["display_name"],
-                "product_code": iog["code"],
-                "term_months": iog.get("term"),
-                "gas_rate": "", "gas_standing": "",
-                **elec,
-            })
-        else:
-            print(f"Warning: no EV-tariff electricity rates found (checked four_rate_ev and dual_register) for region {region} on {iog['code']}", file=sys.stderr)
-    else:
-        print("Warning: no live 'Intelligent Octopus Go' fixed product found.", file=sys.stderr)
-
-    # --- Octopus 12M Fixed (dual fuel) — electricity + gas ---
-    fixed = find_live_product("Octopus 12M Fixed")
-    if fixed:
-        detail = get_product_detail(fixed["code"])
-        elec = extract_single_register_elec(detail, region)
-        gas = extract_gas(detail, region)
-        if elec and gas:
-            rows.append({
-                "date": today,
-                "option": fixed["display_name"],
-                "product_code": fixed["code"],
-                "term_months": fixed.get("term"),
-                **elec,
-                **gas,
-            })
-        else:
-            print(f"Warning: missing elec or gas rates for region {region} on {fixed['code']}", file=sys.stderr)
-    else:
-        print("Warning: no live 'Octopus 12M Fixed' dual-fuel product found.", file=sys.stderr)
+    for cfg in TARIFF_CONFIGS:
+        try:
+            row = resolve_tariff_row(cfg, region, today)
+        except Exception as e:
+            print(f"Warning: '{cfg['label']}' failed ({type(e).__name__}: {e}) -- skipping it, continuing with the rest.", file=sys.stderr)
+            continue
+        if row:
+            rows.append(row)
 
     if not rows:
         sys.exit("No rows to write — see warnings above.")
