@@ -74,3 +74,6 @@ date,option,product_code,term_months,elec_day_rate,elec_night_rate,elec_standing
 2026-10-09,Intelligent Octopus Go 12M Fixed,IOG-SMB-FIX-12M-26-10-01,12,34.955,7.6,60.8578,,,50.0,1405.42,0.0,1405.42,117.12,0.0,117.12
 2026-10-09,Octopus 12M Fixed,OE-FIX-12M-26-10-09,12,,,,,,50.0,0.0,0.0,0.0,0.0,0.0,0.0
 2026-10-09,Octopus 18M Fixed,OE-FIX-18M-26-10-09,18,,,,,,,0.0,0.0,0.0,0.0,0.0,0.0
+2026-10-10,Intelligent Octopus Go 12M Fixed,IOG-SMB-FIX-12M-26-10-01,12,34.955,7.6,60.8578,,,50.0,1405.42,0.0,1405.42,117.12,0.0,117.12
+2026-10-10,Octopus 12M Fixed,OE-FIX-12M-26-10-10,12,,,,,,50.0,0.0,0.0,0.0,0.0,0.0,0.0
+2026-10-10,Octopus 18M Fixed,OE-FIX-18M-26-10-10,18,,,,,,,0.0,0.0,0.0,0.0,0.0,0.0
